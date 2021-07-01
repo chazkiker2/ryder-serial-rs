@@ -1,0 +1,9 @@
+[package]
+name = "ryder-serial"
+version = "0.1.0"
+authors = ["chaz-kiker <chaz-kiker@lambdastudents.com>"]
+edition = "2018"
+
+[dependencies]
+serialport = "4.0.1"
+ascii = "1.0.0"
