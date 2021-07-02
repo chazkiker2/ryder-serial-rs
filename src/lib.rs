@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Write};
+use std::result::Result;
 use std::thread;
-use std::time::Duration;
 
 use ascii::IntoAsciiString;
 use serialport::{SerialPortInfo, SerialPortType};
@@ -22,22 +22,20 @@ const COMMAND_RESTORE_FROM_SEED: u8 = 11;
 const COMMAND_RESTORE_FROM_MNEMONIC: u8 = 12;
 const COMMAND_ERASE: u8 = 13;
 
+#[derive(Debug)]
 struct TrainEntry {
     data: Vec<u8>,
     is_prev_escaped_byte: bool,
     output_buffer: Vec<u8>,
 }
 
-impl TrainEntry {
-    pub fn resolve() {}
-    pub fn reject() {}
+#[derive(Debug)]
+enum ResultEntry {
+    Resolved { buffer: Vec<u8> },
+    Rejected { entry: TrainEntry, error: String },
 }
 
 struct LockEntry;
-impl LockEntry {
-    pub fn resolve() {}
-    pub fn reject() {}
-}
 
 struct RyderSerial {
     id: u32,
@@ -47,6 +45,7 @@ struct RyderSerial {
     state: State,
     train: VecDeque<TrainEntry>,
     lock: VecDeque<LockEntry>,
+    results: Vec<ResultEntry>,
 }
 
 #[derive(PartialEq)]
@@ -64,22 +63,38 @@ struct Options {
 }
 
 impl RyderSerial {
-    fn new(port_name: Option<&str>) -> Self {
-        let ryder_port = port_name.unwrap_or("/dev/tty.usbserial-0215A40B");
+    fn new(port_name: Option<&str>) -> Result<Self, String> {
+        let port_name = match port_name {
+            Some(p) => String::from(p),
+            None => {
+                let ryder_devices = enumerate_devices();
 
-        let mut port = serialport::new(ryder_port, 9600)
+                if ryder_devices.is_empty() {
+                    return Err(String::from("No ryder device found!"));
+                }
+
+                if ryder_devices.len() > 1 {
+                    println!(
+                        "Multiple ryder devices were found! You must specify which device to use."
+                    );
+                    ryder_devices
+                        .into_iter()
+                        .for_each(|ryder_device| println!("{:#?}", ryder_device));
+                    return Err(String::from(
+                        "Multiple ryder devices were found! You must specify which device to use.",
+                    ));
+                }
+                ryder_devices[0].port_name.clone()
+            }
+        };
+
+        let mut port = serialport::new(port_name.clone(), 115_200)
             .open()
-            .expect("Failed to open port");
+            .expect("Failed to open serial port");
 
-        let bytes_written = port.write(&[COMMAND_INFO]).unwrap();
-        println!("{}", bytes_written);
-        let mut serial_buf: Vec<u8> = vec![0; 32];
+        println!("Successfully Opened Ryder Port at: {}", &port_name);
 
-        let bytes_read = port.read(serial_buf.as_mut_slice()).expect("Found no data");
-        println!("{}", bytes_read);
-        println!("{:?}", serial_buf);
-
-        RyderSerial {
+        Ok(RyderSerial {
             id: 0,
             port_name: String::from(""),
             options: Options {
@@ -92,88 +107,167 @@ impl RyderSerial {
             state: State::SENDING,
             train: VecDeque::new(),
             lock: VecDeque::new(),
+            results: Vec::new(),
+        })
+    }
+
+    fn send(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, String> {
+        let mut clone = self.serial.try_clone().expect("Failed to clone");
+
+        let command_buffer = command_buffer.to_owned();
+        println!("Sending Data: {:?}", command_buffer);
+        thread::spawn(move || {
+            clone
+                .write_all(&command_buffer)
+                .expect("Failed to write to serial port");
+        });
+
+        let mut buffer: [u8; 1000] = [0; 1000];
+
+        loop {
+            match self.serial.read(&mut buffer) {
+                Ok(bytes) => {
+                    let data = &buffer[..bytes];
+                    println!(
+                        "Received {} bytes.\nData: {:?}\nData ASCII: {:#?}",
+                        bytes,
+                        data,
+                        data.into_ascii_string()
+                    );
+
+                    self.serial_data(data);
+
+                    return match self.results.remove(0) {
+                        ResultEntry::Resolved { buffer } => Ok(buffer),
+                        ResultEntry::Rejected { entry: _, error } => Err(error),
+                    };
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
+                Err(e) => eprintln!("{:?}", e),
+            }
         }
     }
 
     fn ryder_next(&self) {
-        if State::IDLE == self.state && self.train.is_empty() {
-            println!("-> NEXT... ryderserial is moving to next task");
-            // if self.serial.
+        if State::IDLE == self.state && !self.train.is_empty() {
+            println!("NEXT... ryderserial is moving to next task");
         } else {
-            println!("-> IDLE... ryderserial is waiting for next task");
+            println!("IDLE... ryderserial is waiting for next task");
         }
     }
 
     fn serial_data(&mut self, data: &[u8]) {
         println!("Data from Ryder: {:#?}", &data[..].into_ascii_string());
-
-        if State::IDLE == self.state {
-            println!("Received data from Ryder without asking. Discarding.");
-            return;
-        }
-
         let mut offset = 0;
+        match self.state {
+            State::IDLE => {
+                println!("Received data from Ryder without asking. Discarding.");
+                return;
+            }
+            State::SENDING => {
+                println!("SENDING... ryder-serial is trying to send data");
 
-        if State::SENDING == self.state {
-            match data[0] {
-                RESPONSE_LOCKED => {
-                    println!(
-                        "RESPONSE_LOCKED -- RYDER DEVICE IS NEVER SUPPOSED TO EMIT THIS EVENT"
-                    );
-                    if self.options.reject_on_locked {
-                        println!("Rejecting on Lock");
+                match data[0] {
+                    RESPONSE_LOCKED => {
+                        println!(
+                            "RESPONSE_LOCKED -- RYDER DEVICE IS NEVER SUPPOSED TO EMIT THIS EVENT"
+                        );
+                        if self.options.reject_on_locked {
+                            println!("Rejecting on Lock");
+                            // create a ErrorLocked and reject all remaining train entries
+                            // set state to idle
+                        }
+                        // emit locked
                         return;
                     }
-                }
-                RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED => {
-                    println!("---> (while sending): RESPONSE_OK or RESPONSE_SEND_INPUT or RESPONSE_REJECTED");
-                    if data.len() > 1 {
-                        println!("ryderserial more in buffer");
-                        return self.serial_data(&data[1..]);
+                    RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED => {
+                        println!("RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED");
+                        // - officially remove from front of train
+                        // - resolve current data
+                        // - if there is more in the buffer,
+                        //      - recurse with the rest of the data
+                        //      - return
+                        // - else ::
+                        //      - set our state to idle
+                        //      - call next
+                        //      - return
+                        if data.len() > 1 {
+                            println!("ryderserial more in buffer");
+                            return self.serial_data(&data[1..]);
+                        }
+                        self.state = State::IDLE;
+                        self.ryder_next();
+                        return;
                     }
-                    self.state = State::IDLE;
-                    self.ryder_next();
-                    return;
-                }
-                RESPONSE_OUTPUT => {
-                    println!(
-                        "---> (while sending): RESPONSE_OUTPUT... ryderserial is ready to read"
-                    );
-                    self.state = State::READING;
-                    offset += 1;
-                }
-                RESPONSE_WAIT_USER_CONFIRM => {
-                    // TODO: emit await user confirm
-                    println!("waiting for user to confirm on device");
-                    if data.len() > 1 {
-                        println!("ryderserial more in buffer");
-                        self.serial_data(&data[1..]);
-                    }
-                    return;
-                }
-                _ => {
-                    // error
-                    println!("---> ERROR -- (while sending): ryderserial ran into an error");
-                    self.state = State::IDLE;
-                    if data.len() > 1 {
-                        println!("ryderserial more in buffer");
+                    RESPONSE_OUTPUT => {
+                        println!("RESPONSE_OUTPUT... ryderserial is ready to read");
+                        self.state = State::READING;
                         self.serial_data(&data[1..]);
                         return;
                     }
-                    self.ryder_next();
-                    return;
+                    RESPONSE_WAIT_USER_CONFIRM => {
+                        // TODO: emit await user confirm
+                        println!("waiting for user to confirm on device");
+                        if data.len() > 1 {
+                            println!("ryderserial more in buffer");
+                            self.serial_data(&data[1..]);
+                        }
+                        return;
+                    }
+                    _ => {
+                        // error
+                        println!("ERROR -- (while sending): ryderserial ran into an error");
+                        self.state = State::IDLE;
+                        if data.len() > 1 {
+                            println!("ryderserial more in buffer");
+                            self.serial_data(&data[1..]);
+                            return;
+                        }
+                        self.ryder_next();
+                        return;
+                    }
                 }
             }
-        }
+            State::READING => {
+                println!("READING... ryderserial is trying to read data");
 
-        if State::READING == self.state {
-            println!(
-                "---> (during response_output): READING... ryderserial is trying to read data"
-            );
-            for i in offset..data.len() {
-                let b = data[i];
-                println!("new byte {}", b);
-                return;
+                // - the ryderserial is trying to read data
+                // - initialize watchdog timeout
+
+                let new_entry = TrainEntry {
+                    data: Vec::new(),
+                    is_prev_escaped_byte: false,
+                    output_buffer: Vec::new(),
+                };
+                self.train.push_front(new_entry);
+
+                for i in offset..data.len() {
+                    let b = data[i];
+
+                    if let Some(entry) = self.train.front_mut() {
+                        match b {
+                            RESPONSE_ESC_SEQUENCE => continue,
+                            RESPONSE_OUTPUT_END => {
+                                println!(
+                                    "READING SUCCESS resolving output buffer:\n{:#?}",
+                                    &entry.output_buffer[..].into_ascii_string()
+                                );
+                                // resolve output buffer
+                                let entry = self.train.pop_front().expect("Train was empty");
+
+                                self.results.push(ResultEntry::Resolved {
+                                    buffer: entry.output_buffer,
+                                });
+                                self.state = State::IDLE;
+                                self.ryder_next();
+                                return;
+                            }
+                            _ => (),
+                        }
+                        entry.is_prev_escaped_byte = false;
+                        entry.output_buffer.push(b);
+                    }
+                }
             }
         }
     }
@@ -194,76 +288,12 @@ pub fn enumerate_devices() -> Vec<SerialPortInfo> {
 }
 
 pub fn run() {
-    let ryder_devices: Vec<SerialPortInfo> = enumerate_devices();
-    if ryder_devices.len() > 1 {
-        println!("Multiple ryder devices were found! You must specify which device to use.");
-        ryder_devices
-            .into_iter()
-            .for_each(|ryder_device| println!("{:#?}", ryder_device));
-        return;
-    }
+    let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
+    let data = ryder_serial
+        .send(&[COMMAND_INFO])
+        .expect("Failed to send data");
 
-    let port_name = ryder_devices[0].port_name.clone();
-
-    let mut port = serialport::new(port_name, 115_200)
-        .open()
-        .expect("Failed to open serial port");
-
-    let mut clone = port.try_clone().expect("Failed to clone");
-
-    thread::spawn(move || {
-        clone
-            .write_all(&[COMMAND_INFO])
-            .expect("Failed to write to serial port");
-        thread::sleep(Duration::from_millis(1000));
-    });
-    let mut buffer: [u8; 1000] = [0; 1000];
-
-    loop {
-        match port.read(&mut buffer) {
-            Ok(bytes) => {
-                let data = &buffer[..bytes];
-                println!("Received {} bytes.\nData: {:?}", bytes, &buffer[..bytes]);
-                println!("Data as ASCII: {:#?}", &data[..].into_ascii_string());
-            }
-            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-            Err(e) => eprintln!("{:?}", e),
-        }
-    }
-
-    // match port {
-    //     Ok(mut port) => {
-    //         let mut serial_buf: Vec<u8> = vec![0; 1000];
-    //         println!("Receiving data on {} at {} baud:", &port_name, &115_200);
-    //         loop {
-    //             port.write(&[COMMAND_INFO]).unwrap();
-    //             match port.read(serial_buf.as_mut_slice()) {
-    //                 Ok(t) => io::stdout().write_all(&serial_buf[..t]).unwrap(),
-    //                 Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-    //                 Err(e) => eprintln!("{:?}", e),
-    //             }
-    //         }
-    //     }
-    //     Err(e) => {
-    //         eprintln!("Failed to open \"{}\". Error: {}", port_name, e);
-    //         ::std::process::exit(1);
-    //     }
-    // }
-
-    // let ryder_port = "/dev/tty.usbserial-0215A40B";
-
-    // let mut port = serialport::new(ryder_port, 9600)
-    //     .open()
-    //     .expect("Failed to open port");
-
-    // let mut ryder_serial = RyderSerial::new(None);
-    // let res = ryder_serial.serial.write(&[COMMAND_INFO]).unwrap();
-    // println!("{}", res);
-
-    // ryder_serial.serial_data(&[COMMAND_INFO])
-
-    // let bytes_written = port.write(&"Hello, from Rust".as_bytes()).unwrap();
-    // println!("{}", bytes_written);
+    println!("{:?}", data);
 }
 
 #[cfg(test)]
