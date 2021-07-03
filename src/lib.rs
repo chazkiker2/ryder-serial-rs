@@ -4,6 +4,9 @@ use std::result::Result;
 use std::thread;
 
 use ascii::IntoAsciiString;
+use eyre::{eyre, Error};
+use fehler::throws;
+use futures::future;
 use serialport::{SerialPortInfo, SerialPortType};
 
 const RESPONSE_OK: u8 = 1;
@@ -111,11 +114,12 @@ impl RyderSerial {
         })
     }
 
-    fn send(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, String> {
+    fn send_no_async(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, String> {
         let mut clone = self.serial.try_clone().expect("Failed to clone");
 
         let command_buffer = command_buffer.to_owned();
         println!("Sending Data: {:?}", command_buffer);
+
         thread::spawn(move || {
             clone
                 .write_all(&command_buffer)
@@ -123,6 +127,7 @@ impl RyderSerial {
         });
 
         let mut buffer: [u8; 1000] = [0; 1000];
+        self.state = State::SENDING;
 
         loop {
             match self.serial.read(&mut buffer) {
@@ -137,6 +142,10 @@ impl RyderSerial {
 
                     self.serial_data(data);
 
+                    if self.results.is_empty() {
+                        return Err(String::from("results are empty"));
+                    }
+
                     return match self.results.remove(0) {
                         ResultEntry::Resolved { buffer } => Ok(buffer),
                         ResultEntry::Rejected { entry: _, error } => Err(error),
@@ -144,6 +153,52 @@ impl RyderSerial {
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
                 Err(e) => eprintln!("{:?}", e),
+            }
+        }
+    }
+
+    #[throws]
+    async fn send(&mut self, command_buffer: &[u8]) -> Vec<u8> {
+        let mut clone = self.serial.try_clone()?;
+
+        let command_buffer = command_buffer.to_owned();
+        println!("Sending Data: {:?}", command_buffer);
+
+        thread::spawn(move || {
+            clone
+                .write_all(&command_buffer)
+                .expect("Failed to write to serial port");
+        });
+
+        let mut buffer: [u8; 1000] = [0; 1000];
+        self.state = State::SENDING;
+
+        loop {
+            match self.serial.read(&mut buffer) {
+                Ok(bytes) => {
+                    let data = &buffer[..bytes];
+                    println!(
+                        "Received {} bytes.\nData: {:?}\nData ASCII: {:#?}",
+                        bytes,
+                        data,
+                        data.into_ascii_string()
+                    );
+
+                    self.serial_data(data);
+
+                    if self.results.is_empty() {
+                        fehler::throw!(eyre!("results are empty"));
+                    }
+
+                    return match self.results.remove(0) {
+                        ResultEntry::Resolved { buffer } => {
+                            future::ok::<Vec<u8>, eyre::Error>(buffer).await?
+                        }
+                        ResultEntry::Rejected { entry: _, error } => fehler::throw!(eyre!(error)),
+                    };
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
+                Err(e) => fehler::throw!(eyre!(e)),
             }
         }
     }
@@ -158,7 +213,7 @@ impl RyderSerial {
 
     fn serial_data(&mut self, data: &[u8]) {
         println!("Data from Ryder: {:#?}", &data[..].into_ascii_string());
-        let mut offset = 0;
+
         match self.state {
             State::IDLE => {
                 println!("Received data from Ryder without asking. Discarding.");
@@ -239,9 +294,10 @@ impl RyderSerial {
                     is_prev_escaped_byte: false,
                     output_buffer: Vec::new(),
                 };
+
                 self.train.push_front(new_entry);
 
-                for i in offset..data.len() {
+                for i in 0..data.len() {
                     let b = data[i];
 
                     if let Some(entry) = self.train.front_mut() {
@@ -287,13 +343,34 @@ pub fn enumerate_devices() -> Vec<SerialPortInfo> {
         .collect()
 }
 
-pub fn run() {
+pub fn run_no_async() {
     let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
     let data = ryder_serial
-        .send(&[COMMAND_INFO])
+        .send_no_async(&[COMMAND_INFO])
         .expect("Failed to send data");
 
-    println!("{:?}", data);
+    println!("Received Data from async send #1 --- {:?}", data);
+
+    let data = ryder_serial
+        .send_no_async(&[COMMAND_INFO])
+        .expect("Failed to send data");
+
+    println!("Received Data from async send #2 --- {:?}", data);
+}
+
+#[throws]
+pub async fn run() {
+    let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
+    let data = ryder_serial.send(&[COMMAND_INFO]).await?;
+
+    println!("Received Data from async send #1 --- {:?}", data);
+
+    let data = ryder_serial
+        .send(&[COMMAND_INFO])
+        .await
+        .expect("Failed to send data");
+
+    println!("Received Data from async send #2 --- {:?}", data);
 }
 
 #[cfg(test)]
