@@ -1,5 +1,34 @@
 # Ryder Serial Notes
 
+## Interesting Errors:
+
+### Send WAKE when Prototype is "powered off" but still connected
+
+```bash
+[2021-07-03T20:05:46Z DEBUG ryder_serial] Successfully Opened Ryder Port at: /dev/tty.usbserial-0215A40B
+[2021-07-03T20:05:46Z DEBUG ryder_serial] Sending Data: [1]
+[2021-07-03T20:05:56Z DEBUG ryder_serial] Received 64 bytes.
+    Data: [101, 116, 115, 32, 74, 117, 108, 32, 50, 57, 32, 50, 48, 49, 57, 32, 49, 50, 58, 50, 49, 58, 52, 54, 13, 10, 13, 10, 114, 115, 116, 58, 48, 120, 49, 32, 40, 80, 79, 87, 69, 82, 79, 78, 95, 82, 69, 83, 69, 84, 41, 44, 98, 111, 111, 116, 58, 48, 120, 49, 51, 32, 40, 83]
+    Data ASCII: Ok(
+        "ets Jul 29 2019 12:21:46\r\n\r\nrst:0x1 (POWERON_RESET),boot:0x13 (S",
+    )
+[2021-07-03T20:05:56Z DEBUG ryder_serial] Data from Ryder: Ok(
+        "ets Jul 29 2019 12:21:46\r\n\r\nrst:0x1 (POWERON_RESET),boot:0x13 (S",
+    )
+[2021-07-03T20:05:56Z DEBUG ryder_serial] SENDING... ryder-serial is trying to send data
+[2021-07-03T20:05:56Z DEBUG ryder_serial] ERROR -- (while sending): ryderserial ran into an error
+[2021-07-03T20:05:56Z DEBUG ryder_serial] ryderserial more in buffer
+[2021-07-03T20:05:56Z DEBUG ryder_serial] Data from Ryder: Ok(
+        "ts Jul 29 2019 12:21:46\r\n\r\nrst:0x1 (POWERON_RESET),boot:0x13 (S",
+    )
+[2021-07-03T20:05:56Z DEBUG ryder_serial] Received data from Ryder without asking. Discarding.
+thread 'main' panicked at 'Failed to run: results are empty
+
+Location:
+    /Users/chazadmin/code/opensource/ryder-serial-rs/src/lib.rs:265:32', src/main.rs:16:31
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+```
+
 ## Serial Data
 
 Takes in a buffer of `&[u8]`

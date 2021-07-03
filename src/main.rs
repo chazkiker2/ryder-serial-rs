@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate log;
-
 use env_logger::Env;
 use eyre::Error;
 use fehler::throws;
@@ -17,5 +14,5 @@ async fn main() {
     env_logger::init_from_env(env);
 
     ryder_serial::run().await.expect("Failed to run");
-    ryder_serial::run_no_async();
+    // ryder_serial::run_no_async();
 }
