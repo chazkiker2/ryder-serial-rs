@@ -7,6 +7,7 @@ use ascii::IntoAsciiString;
 use eyre::{eyre, Error};
 use fehler::throws;
 use futures::future;
+use log::{debug, error, info, trace, warn};
 use serialport::{SerialPortInfo, SerialPortType};
 
 const RESPONSE_OK: u8 = 1;
@@ -77,12 +78,13 @@ impl RyderSerial {
                 }
 
                 if ryder_devices.len() > 1 {
-                    println!(
+                    error!(
                         "Multiple ryder devices were found! You must specify which device to use."
                     );
                     ryder_devices
                         .into_iter()
-                        .for_each(|ryder_device| println!("{:#?}", ryder_device));
+                        .for_each(|ryder_device| debug!("{:#?}", ryder_device));
+
                     return Err(String::from(
                         "Multiple ryder devices were found! You must specify which device to use.",
                     ));
@@ -95,7 +97,7 @@ impl RyderSerial {
             .open()
             .expect("Failed to open serial port");
 
-        println!("Successfully Opened Ryder Port at: {}", &port_name);
+        debug!("Successfully Opened Ryder Port at: {}", &port_name);
 
         Ok(RyderSerial {
             id: 0,
@@ -118,7 +120,7 @@ impl RyderSerial {
         let mut clone = self.serial.try_clone().expect("Failed to clone");
 
         let command_buffer = command_buffer.to_owned();
-        println!("Sending Data: {:?}", command_buffer);
+        debug!("Sending Data: {:?}", command_buffer);
 
         thread::spawn(move || {
             clone
@@ -133,7 +135,8 @@ impl RyderSerial {
             match self.serial.read(&mut buffer) {
                 Ok(bytes) => {
                     let data = &buffer[..bytes];
-                    println!(
+
+                    debug!(
                         "Received {} bytes.\nData: {:?}\nData ASCII: {:#?}",
                         bytes,
                         data,
@@ -162,7 +165,8 @@ impl RyderSerial {
         let mut clone = self.serial.try_clone()?;
 
         let command_buffer = command_buffer.to_owned();
-        println!("Sending Data: {:?}", command_buffer);
+
+        debug!("Sending Data: {:?}", command_buffer);
 
         thread::spawn(move || {
             clone
@@ -177,7 +181,8 @@ impl RyderSerial {
             match self.serial.read(&mut buffer) {
                 Ok(bytes) => {
                     let data = &buffer[..bytes];
-                    println!(
+
+                    debug!(
                         "Received {} bytes.\nData: {:?}\nData ASCII: {:#?}",
                         bytes,
                         data,
@@ -205,30 +210,30 @@ impl RyderSerial {
 
     fn ryder_next(&self) {
         if State::IDLE == self.state && !self.train.is_empty() {
-            println!("NEXT... ryderserial is moving to next task");
+            debug!("NEXT... ryderserial is moving to next task");
         } else {
-            println!("IDLE... ryderserial is waiting for next task");
+            debug!("IDLE... ryderserial is waiting for next task");
         }
     }
 
     fn serial_data(&mut self, data: &[u8]) {
-        println!("Data from Ryder: {:#?}", &data[..].into_ascii_string());
+        debug!("Data from Ryder: {:#?}", &data[..].into_ascii_string());
 
         match self.state {
             State::IDLE => {
-                println!("Received data from Ryder without asking. Discarding.");
+                debug!("Received data from Ryder without asking. Discarding.");
                 return;
             }
             State::SENDING => {
-                println!("SENDING... ryder-serial is trying to send data");
+                debug!("SENDING... ryder-serial is trying to send data");
 
                 match data[0] {
                     RESPONSE_LOCKED => {
-                        println!(
+                        debug!(
                             "RESPONSE_LOCKED -- RYDER DEVICE IS NEVER SUPPOSED TO EMIT THIS EVENT"
                         );
                         if self.options.reject_on_locked {
-                            println!("Rejecting on Lock");
+                            debug!("Rejecting on Lock");
                             // create a ErrorLocked and reject all remaining train entries
                             // set state to idle
                         }
@@ -236,7 +241,7 @@ impl RyderSerial {
                         return;
                     }
                     RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED => {
-                        println!("RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED");
+                        debug!("RESPONSE_OK | RESPONSE_SEND_INPUT | RESPONSE_REJECTED");
                         // - officially remove from front of train
                         // - resolve current data
                         // - if there is more in the buffer,
@@ -247,7 +252,7 @@ impl RyderSerial {
                         //      - call next
                         //      - return
                         if data.len() > 1 {
-                            println!("ryderserial more in buffer");
+                            debug!("ryderserial more in buffer");
                             return self.serial_data(&data[1..]);
                         }
                         self.state = State::IDLE;
@@ -255,14 +260,14 @@ impl RyderSerial {
                         return;
                     }
                     RESPONSE_OUTPUT => {
-                        println!("RESPONSE_OUTPUT... ryderserial is ready to read");
+                        debug!("RESPONSE_OUTPUT... ryderserial is ready to read");
                         self.state = State::READING;
                         self.serial_data(&data[1..]);
                         return;
                     }
                     RESPONSE_WAIT_USER_CONFIRM => {
                         // TODO: emit await user confirm
-                        println!("waiting for user to confirm on device");
+                        debug!("waiting for user to confirm on device");
                         if data.len() > 1 {
                             println!("ryderserial more in buffer");
                             self.serial_data(&data[1..]);
@@ -271,10 +276,10 @@ impl RyderSerial {
                     }
                     _ => {
                         // error
-                        println!("ERROR -- (while sending): ryderserial ran into an error");
+                        debug!("ERROR -- (while sending): ryderserial ran into an error");
                         self.state = State::IDLE;
                         if data.len() > 1 {
-                            println!("ryderserial more in buffer");
+                            debug!("ryderserial more in buffer");
                             self.serial_data(&data[1..]);
                             return;
                         }
@@ -284,7 +289,7 @@ impl RyderSerial {
                 }
             }
             State::READING => {
-                println!("READING... ryderserial is trying to read data");
+                debug!("READING... ryderserial is trying to read data");
 
                 // - the ryderserial is trying to read data
                 // - initialize watchdog timeout
@@ -304,7 +309,7 @@ impl RyderSerial {
                         match b {
                             RESPONSE_ESC_SEQUENCE => continue,
                             RESPONSE_OUTPUT_END => {
-                                println!(
+                                debug!(
                                     "READING SUCCESS resolving output buffer:\n{:#?}",
                                     &entry.output_buffer[..].into_ascii_string()
                                 );
@@ -349,27 +354,23 @@ pub fn run_no_async() {
         .send_no_async(&[COMMAND_INFO])
         .expect("Failed to send data");
 
-    println!("Received Data from async send #1 --- {:?}", data);
+    println!("Received Data from non-async send #1 --- {:?}", data);
 
     let data = ryder_serial
         .send_no_async(&[COMMAND_INFO])
         .expect("Failed to send data");
 
-    println!("Received Data from async send #2 --- {:?}", data);
+    println!("Received Data from non-async send #2 --- {:?}", data);
 }
 
 #[throws]
 pub async fn run() {
     let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
-    let data = ryder_serial.send(&[COMMAND_INFO]).await?;
 
+    let data = ryder_serial.send(&[COMMAND_INFO]).await?;
     println!("Received Data from async send #1 --- {:?}", data);
 
-    let data = ryder_serial
-        .send(&[COMMAND_INFO])
-        .await
-        .expect("Failed to send data");
-
+    let data = ryder_serial.send(&[COMMAND_INFO]).await?;
     println!("Received Data from async send #2 --- {:?}", data);
 }
 
