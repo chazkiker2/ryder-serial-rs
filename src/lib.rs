@@ -222,7 +222,6 @@ impl Reactor {
                     Event::Close => break,
                     Event::SendTask(id) => {
                         let event_handle = thread::spawn(move || {
-                            // thread::sleep(Duration::from_secs(duration));
                             let reactor = reactor.upgrade().unwrap();
                             reactor.lock().map(|mut r| r.wake(id)).unwrap();
                         });
@@ -397,19 +396,17 @@ impl RyderSerial {
 
     async fn send(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, Error> {
         self.task_id += 1;
+
         let new_fut = async {
-            let val = Task::new(
+            Task::new(
                 self.reactor.clone(),
                 command_buffer.to_owned().iter().cloned().collect(),
                 self.task_id,
             )
-            .await;
-            val
+            .await
         };
 
-        let main_fut = async { new_fut.await };
-
-        Ok(block_on(main_fut))
+        Ok(block_on(new_fut))
     }
 
     fn ryder_next(&mut self) -> Result<(), Error> {
