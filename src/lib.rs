@@ -17,34 +17,21 @@ use fehler::{throw, throws};
 use log;
 use serialport::{SerialPortInfo, SerialPortType};
 
-// ============================= EXECUTOR ====================================
+// ----------------------------- EXECUTOR ------------------------------------
 #[derive(Default)]
 struct Parker(Mutex<bool>, Condvar);
 
 impl Parker {
     fn park(&self) {
-        // We acquire a lock to the Mutex which protects our flag indicating if we
-        // should resume execution or not.
         let mut resumable = self.0.lock().unwrap();
-
-        // We put this in a loop since there is a chance we'll get woken, but
-        // our flag hasn't changed. If that happens, we simply go back to sleep.
         while !*resumable {
-            // We sleep until someone notifies us
             resumable = self.1.wait(resumable).unwrap();
         }
-
-        // We immediately set the condition to false, so that next time we call `park` we'll
-        // go right to sleep.
         *resumable = false;
     }
 
     fn unpark(&self) {
-        // We simply acquire a lock to our flag and sets the condition to `runnable` when we
-        // get it.
         *self.0.lock().unwrap() = true;
-
-        // We notify our `Condvar` so it wakes up and resumes.
         self.1.notify_one();
     }
 }
@@ -251,10 +238,7 @@ impl Reactor {
         if self.tasks.insert(id, TaskState::NotReady(waker)).is_some() {
             panic!("Tried to insert a task with id: '{}', twice!", id);
         }
-        self.dispatcher
-            // .send(Event::SendTask(id, command_buffer, output_buffer.clone()))
-            .send(Event::SendTask(id))
-            .unwrap();
+        self.dispatcher.send(Event::SendTask(id)).unwrap();
     }
 
     fn is_ready(&self, id: usize) -> bool {
@@ -275,18 +259,7 @@ impl Drop for Reactor {
     }
 }
 
-#[throws]
-pub async fn run() {
-    let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
-
-    ryder_serial.wake().await?;
-
-    let version = ryder_serial.info().await?;
-    println!("Received Data from async send #1 --- {:?}", version);
-
-    let res = ryder_serial.info().await?;
-    println!("data from async send #2 --- {:?}", res);
-}
+// ------------------------- Ryder Serial ----------------------------
 
 #[repr(u8)]
 enum Response {
@@ -389,6 +362,7 @@ enum Command {
     // RestoreFromSeed = 11,
     // RestoreFromMnemonic = 12,
     // Erase = 13,
+
     // // export commands
     // ExportOwnerKey = 18,
     // ExportOwnerKeyPrivateKey = 19,
@@ -397,10 +371,12 @@ enum Command {
     // ExportOwnerAppKeyPrivateKey = 23,
     // ExportPublicIdentities = 30,
     // ExportPublicIdentity = 31,
+
     // // encrypt / decrypt commands
     // StartEncrypt = 40,
     // StartDecrypt = 41,
-    // // cancel command
+
+    // cancel command
     Cancel = 100,
 }
 
@@ -454,10 +430,15 @@ pub fn enumerate_devices() -> Vec<SerialPortInfo> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
+#[throws]
+pub async fn run() {
+    let mut ryder_serial = RyderSerial::new(None).expect("failed to make Ryder Serial");
+
+    ryder_serial.wake().await?;
+
+    let version = ryder_serial.info().await?;
+    println!("Received Data from async send #1 --- {:?}", version);
+
+    let res = ryder_serial.info().await?;
+    println!("data from async send #2 --- {:?}", res);
 }
