@@ -7,8 +7,8 @@ use std::pin::Pin;
 use std::result::Result;
 use std::str;
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Condvar, Mutex};
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 use std::thread::{self, JoinHandle};
 
 use ascii::IntoAsciiString;
@@ -17,80 +17,13 @@ use fehler::{throw, throws};
 use log;
 use serialport::{SerialPortInfo, SerialPortType};
 
-// ----------------------------- EXECUTOR ------------------------------------
-#[derive(Default)]
-struct Parker(Mutex<bool>, Condvar);
-
-impl Parker {
-    fn park(&self) {
-        let mut resumable = self.0.lock().unwrap();
-        while !*resumable {
-            resumable = self.1.wait(resumable).unwrap();
-        }
-        *resumable = false;
-    }
-
-    fn unpark(&self) {
-        *self.0.lock().unwrap() = true;
-        self.1.notify_one();
-    }
-}
-
-fn block_on<F: Future>(mut future: F) -> F::Output {
-    let parker = Arc::new(Parker::default());
-    let ryder_waker = Arc::new(RyderWaker {
-        parker: parker.clone(),
-    });
-    let waker = ryder_waker_into_waker(Arc::into_raw(ryder_waker));
-    let mut cx = Context::from_waker(&waker);
-
-    // SAFETY: we shadow `future` so it can't be accessed again.
-    let mut future = unsafe { Pin::new_unchecked(&mut future) };
-    loop {
-        match Future::poll(future.as_mut(), &mut cx) {
-            Poll::Ready(val) => break val,
-            Poll::Pending => parker.park(),
-        };
-    }
-}
-
 // ----------------------------------------- FUTURE ------------------------------------------
-#[derive(Clone)]
-struct RyderWaker {
-    parker: Arc<Parker>,
-}
-
 #[derive(Clone, Debug)]
 pub struct Task {
     id: usize,
     reactor: Arc<Mutex<Box<Reactor>>>,
     command_buffer: Vec<u8>,
     output_buffer: Vec<u8>,
-}
-
-fn ryder_waker_wake(s: &RyderWaker) {
-    let waker_arc = unsafe { Arc::from_raw(s) };
-    waker_arc.parker.unpark();
-}
-
-fn ryder_waker_clone(s: &RyderWaker) -> RawWaker {
-    let arc = unsafe { Arc::from_raw(s) };
-    std::mem::forget(arc.clone()); // increase ref count
-    RawWaker::new(Arc::into_raw(arc) as *const (), &VTABLE)
-}
-
-const VTABLE: RawWakerVTable = unsafe {
-    RawWakerVTable::new(
-        |s| ryder_waker_clone(&*(s as *const RyderWaker)), // clone
-        |s| ryder_waker_wake(&*(s as *const RyderWaker)),  // wake
-        |s| (*(s as *const RyderWaker)).parker.unpark(),   // wake by ref (don't decrease refcount)
-        |s| drop(Arc::from_raw(s as *const RyderWaker)),   // decrease refcount
-    )
-};
-
-fn ryder_waker_into_waker(s: *const RyderWaker) -> Waker {
-    let raw_waker = RawWaker::new(s as *const (), &VTABLE);
-    unsafe { Waker::from_raw(raw_waker) }
 }
 
 impl Task {
@@ -147,13 +80,7 @@ impl Future for Task {
                 .insert(self.id, TaskState::NotReady(cx.waker().clone()));
             Poll::Pending
         } else {
-            r.register(
-                self.id,
-                // self.id,
-                // self.command_buffer,
-                // &mut self.output_buffer,
-                cx.waker().clone(),
-            );
+            r.register(self.id, cx.waker().clone());
             Poll::Pending
         }
     }
@@ -338,13 +265,17 @@ impl RyderSerial {
     async fn send(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, Error> {
         self.task_id += 1;
 
-        let task_fut = Task::new(
-            self.reactor.clone(),
-            command_buffer.to_owned().iter().cloned().collect(),
-            self.task_id,
-        );
+        let react = self.reactor.clone();
+        let task_id = self.task_id.clone();
+        let command_buffer = command_buffer.to_owned().iter().cloned().collect();
 
-        Ok(block_on(task_fut))
+        let task_fut =
+            tokio::task::spawn(async move { Task::new(react, command_buffer, task_id).await });
+
+        match task_fut.await {
+            Ok(s) => Ok(s),
+            Err(e) => Err(eyre!("{}", e)),
+        }
     }
 }
 
