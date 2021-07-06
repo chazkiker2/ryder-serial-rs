@@ -187,7 +187,6 @@ impl std::fmt::Debug for Reactor {
             .field("dispatcher", &self.dispatcher)
             .field("handle", &self.handle)
             .field("tasks", &self.tasks)
-            // .field("serial", )
             .finish()
     }
 }
@@ -339,16 +338,13 @@ impl RyderSerial {
     async fn send(&mut self, command_buffer: &[u8]) -> Result<Vec<u8>, Error> {
         self.task_id += 1;
 
-        let new_fut = async {
-            Task::new(
-                self.reactor.clone(),
-                command_buffer.to_owned().iter().cloned().collect(),
-                self.task_id,
-            )
-            .await
-        };
+        let task_fut = Task::new(
+            self.reactor.clone(),
+            command_buffer.to_owned().iter().cloned().collect(),
+            self.task_id,
+        );
 
-        Ok(block_on(new_fut))
+        Ok(block_on(task_fut))
     }
 }
 
