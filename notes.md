@@ -180,3 +180,6 @@ returns void
     - initialize watchdog timeout
 - ELSE
   - ryder serial is IDLE
+
+
+## Chaz' Notes
