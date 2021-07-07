@@ -1,15 +1,17 @@
-use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::future::Future;
-use std::io::{self, Write};
-use std::mem;
-use std::pin::Pin;
-use std::result::Result;
-use std::str;
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
-use std::thread::{self, JoinHandle};
+use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    future::Future,
+    io::{self, Write},
+    mem,
+    pin::Pin,
+    result::Result,
+    str,
+    sync::mpsc::{channel, Sender},
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+    thread::{self, JoinHandle},
+};
 
 use ascii::IntoAsciiString;
 use eyre::{eyre, Error};
@@ -127,11 +129,11 @@ impl Reactor {
             tasks: HashMap::new(),
             serial: serial.try_clone().unwrap(),
         })));
-        let reactor_clone = Arc::downgrade(&reactor);
+        let reactor_weak = Arc::downgrade(&reactor);
         let handle = thread::spawn(move || {
             let mut handles = vec![];
             for event in rx {
-                let reactor = reactor_clone.clone();
+                let reactor = reactor_weak.clone();
                 match event {
                     Event::Close => break,
                     Event::SendTask(id) => {
