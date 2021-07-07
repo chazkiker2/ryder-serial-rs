@@ -272,10 +272,7 @@ impl RyderSerial {
         let task_fut =
             tokio::task::spawn(async move { Task::new(react, command_buffer, task_id).await });
 
-        match task_fut.await {
-            Ok(s) => Ok(s),
-            Err(e) => Err(eyre!("{}", e)),
-        }
+        Ok(task_fut.await?)
     }
 }
 
